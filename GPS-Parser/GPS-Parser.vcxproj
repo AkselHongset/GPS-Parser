@@ -136,6 +136,7 @@
     <ClInclude Include="Display.h" />
     <ClInclude Include="Gps1.h" />
     <ClInclude Include="Gps2.h" />
+    <ClInclude Include="Network.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Common.cpp" />
@@ -143,6 +144,7 @@
     <ClCompile Include="Gps1.cpp" />
     <ClCompile Include="Gps2.cpp" />
     <ClCompile Include="Main.cpp" />
+    <ClCompile Include="Network.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
