@@ -7,6 +7,7 @@
 #include <string>
 #include <mutex>
 #include <vector>
+#include <atomic>
 
 // Struktur for å lagre NMEA GGA-data
 struct NMEAGGA {
@@ -50,5 +51,6 @@ struct Settings {
 extern NMEAGGA latest_gga;
 extern UBXNAVRELPOSNED latest_relposned;
 extern std::mutex data_mutex;
+extern std::atomic<bool> running;
 
 #endif // COMMON_H

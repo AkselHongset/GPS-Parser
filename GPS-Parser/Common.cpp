@@ -13,3 +13,4 @@ relPosHeading(0.0), carrSoln(0), isMoving(false), valid(false) {
 NMEAGGA latest_gga;
 UBXNAVRELPOSNED latest_relposned;
 std::mutex data_mutex;
+std::atomic<bool> running(true);

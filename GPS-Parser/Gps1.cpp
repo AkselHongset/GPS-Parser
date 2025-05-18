@@ -17,9 +17,27 @@ NMEAGGA parse_gga(const std::string& sentence) {
         if (fields.size() >= 10) {
             try {
                 gga.timestamp = fields[1];
-                gga.latitude = fields[2].empty() ? 0.0 : std::stod(fields[2]) / 100.0;
+                // Convert latitude DDMM.MMMM to decimal degrees
+                if (!fields[2].empty()) {
+                    double lat = std::stod(fields[2]);
+                    int degrees = static_cast<int>(lat / 100);
+                    double minutes = lat - (degrees * 100);
+                    gga.latitude = degrees + minutes / 60.0;
+                }
+                else {
+                    gga.latitude = 0.0;
+                }
                 gga.lat_dir = fields[3].empty() ? ' ' : fields[3][0];
-                gga.longitude = fields[4].empty() ? 0.0 : std::stod(fields[4]) / 100.0;
+                // Convert longitude DDDMM.MMMM to decimal degrees
+                if (!fields[4].empty()) {
+                    double lon = std::stod(fields[4]);
+                    int degrees = static_cast<int>(lon / 100);
+                    double minutes = lon - (degrees * 100);
+                    gga.longitude = degrees + minutes / 60.0;
+                }
+                else {
+                    gga.longitude = 0.0;
+                }
                 gga.lon_dir = fields[5].empty() ? ' ' : fields[5][0];
                 gga.gps_qual = fields[6].empty() ? 0 : std::stoi(fields[6]);
                 gga.num_sats = fields[7].empty() ? 0 : std::stoi(fields[7]);
@@ -45,7 +63,7 @@ void read_gps1(const std::string& port, DWORD baud_rate) {
     std::string buffer;
     char data[256];
     DWORD bytesRead;
-    while (true) {
+    while (running) {
         if (ReadFile(gps1_handle, data, sizeof(data) - 1, &bytesRead, NULL)) {
             if (bytesRead > 0) {
                 data[bytesRead] = '\0';
@@ -63,7 +81,8 @@ void read_gps1(const std::string& port, DWORD baud_rate) {
                     }
                 }
             }
-        } else {
+        }
+        else {
             std::cerr << "Error reading from " << port << ": " << GetLastError() << std::endl;
             Sleep(1000);
         }

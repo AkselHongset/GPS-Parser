@@ -113,8 +113,8 @@ int main() {
 
         // Åpne GPS1-port
         gps1_handle = CreateFileA(("\\\\.\\" + settings.gps1_port).c_str(),
-                                  GENERIC_READ | GENERIC_WRITE, 0, NULL,
-                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            GENERIC_READ | GENERIC_WRITE, 0, NULL,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (gps1_handle == INVALID_HANDLE_VALUE) {
             throw std::runtime_error("Failed to open GPS1 port " + settings.gps1_port + ": Error " + std::to_string(GetLastError()));
         }
@@ -158,17 +158,29 @@ int main() {
 
         std::cout << "Press Enter to exit..." << std::endl;
         std::cin.get();
+        running = false; // Signal threads to exit
+        Sleep(1000); // Allow threads to clean up
 
-        // Lukk gps1_handle før avslutning
-        CloseHandle(gps1_handle);
-    }
-    catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-        std::cerr << "Press Enter to exit..." << std::endl;
-        std::cin.get();
+        // Lukk håndtak
         if (gps1_handle != INVALID_HANDLE_VALUE) {
             CloseHandle(gps1_handle);
         }
+        if (gps2_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(gps2_handle);
+        }
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        running = false;
+        Sleep(1000);
+        if (gps1_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(gps1_handle);
+        }
+        if (gps2_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(gps2_handle);
+        }
+        std::cerr << "Press Enter to exit..." << std::endl;
+        std::cin.get();
         return 1;
     }
 

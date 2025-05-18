@@ -4,5 +4,6 @@
 #include "Common.h"
 
 void display_data(DWORD interval_ms);
+void update_rtcm_timestamp();
 
 #endif // DISPLAY_H

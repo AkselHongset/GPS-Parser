@@ -1,4 +1,5 @@
 #include "Network.h"
+#include "Display.h"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -15,14 +16,12 @@ std::string calculate_nmea_checksum(const std::string& sentence) {
 }
 
 void send_to_agopengps(const Settings& settings) {
-    // Initialiser Winsock
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         std::cerr << "WSAStartup failed: " << WSAGetLastError() << std::endl;
         return;
     }
 
-    // Opprett UDP-socket
     SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (udpSocket == INVALID_SOCKET) {
         std::cerr << "Failed to create UDP socket: " << WSAGetLastError() << std::endl;
@@ -30,7 +29,6 @@ void send_to_agopengps(const Settings& settings) {
         return;
     }
 
-    // Sett opp serveradresse
     sockaddr_in serverAddr;
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(settings.udp_port);
@@ -40,48 +38,53 @@ void send_to_agopengps(const Settings& settings) {
         WSACleanup();
         return;
     }
+    // Set socket to non-blocking
+    u_long mode = 1;
+    ioctlsocket(udpSocket, FIONBIO, &mode);
 
-    while (true) {
+    while (running) {
         std::string paogi_message;
         {
             std::lock_guard<std::mutex> lock(data_mutex);
-
-            // Generer $PAOGI-melding hvis både GGA og RELPOSNED er gyldige, og vi har en fix
             if (latest_gga.valid && latest_relposned.valid && latest_gga.gps_qual > 0) {
-                // Koordinater i DDMM.MMMM-format
-                double lat = latest_gga.latitude * 100.0;
-                double lon = latest_gga.longitude * 100.0;
+                // Convert to DDMM.MMMM
+                double lat = latest_gga.latitude;
+                double lat_ddmm = (int)lat * 100 + (lat - (int)lat) * 60;
+                double lon = latest_gga.longitude;
+                double lon_ddmm = (int)lon * 100 + (lon - (int)lon) * 60;
 
                 std::stringstream ss;
                 ss << "$PAOGI,"
                     << latest_gga.timestamp << ","
-                    << std::fixed << std::setprecision(7) << lat << "," << latest_gga.lat_dir << ","
-                    << std::fixed << std::setprecision(7) << lon << "," << latest_gga.lon_dir << ","
+                    << std::fixed << std::setprecision(4) << lat_ddmm << "," << latest_gga.lat_dir << ","
+                    << std::fixed << std::setprecision(4) << lon_ddmm << "," << latest_gga.lon_dir << ","
                     << latest_gga.gps_qual << ","
                     << latest_gga.num_sats << ","
                     << std::fixed << std::setprecision(1) << latest_gga.hdop << ","
                     << std::fixed << std::setprecision(1) << latest_gga.altitude << ","
-                    << "0.0,"
-                    << "0.0,"
-                    << "0.0,"
-                    << "0,"
-                    << "0.0,"
-                    << std::fixed << std::setprecision(1) << latest_relposned.relPosHeading << ","
-                    << "T";
+                    << "0.0," // Age of differential
+                    << "0.0," // Speed
+                    << std::fixed << std::setprecision(1) << latest_relposned.relPosHeading << "," // Heading
+                    << "0.0," // Roll
+                    << "0.0," // Pitch
+                    << std::fixed << std::setprecision(1) << latest_relposned.relPosHeading << "," // Yaw
+                    << std::fixed << std::setprecision(3) << latest_relposned.relPosLength << "," // Distance
+                    << "T"; // Tilt
                 paogi_message = ss.str();
                 paogi_message += "*" + calculate_nmea_checksum(paogi_message.substr(1)) + "\r\n";
             }
         }
 
-        // Send meldingen hvis den er gyldig
         if (!paogi_message.empty()) {
             int len = static_cast<int>(paogi_message.length());
-            sendto(udpSocket, paogi_message.c_str(), len, 0,
+            int bytesSent = sendto(udpSocket, paogi_message.c_str(), len, 0,
                 (sockaddr*)&serverAddr, sizeof(serverAddr));
-            std::cout << "Sent to AgOpenGPS: " << paogi_message;
+            if (bytesSent == SOCKET_ERROR) {
+                std::cerr << "Failed to send PAOGI: " << WSAGetLastError() << std::endl;
+            }
         }
 
-        Sleep(100);
+        Sleep(100); // 10 Hz update rate
     }
 
     closesocket(udpSocket);
@@ -114,23 +117,39 @@ void fetch_rtcm_udp(HANDLE gps1_handle) {
         return;
     }
 
+    // Set socket to non-blocking
+    u_long mode = 1;
+    ioctlsocket(udpSocket, FIONBIO, &mode);
+
     std::cout << "Listening for RTCM corrections on UDP port 2233..." << std::endl;
 
-    char buffer[1024];
+    char buffer[2048]; // Increased buffer size
     sockaddr_in senderAddr;
     int senderAddrSize = sizeof(senderAddr);
-    while (true) {
+    while (running) {
         int bytesReceived = recvfrom(udpSocket, buffer, sizeof(buffer), 0,
-                                     (sockaddr*)&senderAddr, &senderAddrSize);
+            (sockaddr*)&senderAddr, &senderAddrSize);
         if (bytesReceived > 0) {
-            DWORD bytesWritten;
-            WriteFile(gps1_handle, buffer, bytesReceived, &bytesWritten, nullptr);
-            std::cout << "Received " << bytesReceived << " bytes of RTCM data via UDP, sent "
-                      << bytesWritten << " to GPS1" << std::endl;
-        } else if (bytesReceived == SOCKET_ERROR) {
-            std::cerr << "Error receiving UDP data: " << WSAGetLastError() << std::endl;
-            Sleep(1000);
+            if (gps1_handle != INVALID_HANDLE_VALUE) {
+                DWORD bytesWritten;
+                if (WriteFile(gps1_handle, buffer, bytesReceived, &bytesWritten, nullptr)) {
+                    update_rtcm_timestamp();
+                }
+                else {
+                    std::cerr << "Failed to write RTCM to GPS1: " << GetLastError() << std::endl;
+                }
+            }
+            else {
+                std::cerr << "Invalid GPS1 handle for RTCM data" << std::endl;
+            }
         }
+        else if (bytesReceived == SOCKET_ERROR) {
+            int error = WSAGetLastError();
+            if (error != WSAEWOULDBLOCK) {
+                std::cerr << "Error receiving UDP data: " << error << std::endl;
+            }
+        }
+        Sleep(10); // Prevent tight loop in non-blocking mode
     }
 
     closesocket(udpSocket);
