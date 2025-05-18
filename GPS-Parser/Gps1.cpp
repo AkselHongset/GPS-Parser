@@ -14,12 +14,12 @@ NMEAGGA parse_gga(const std::string& sentence) {
         while (std::getline(ss, field, ',')) {
             fields.push_back(field);
         }
-        if (fields.size() >= 10) { // Minimum felt for GGA
+        if (fields.size() >= 10) {
             try {
                 gga.timestamp = fields[1];
-                gga.latitude = fields[2].empty() ? 0.0 : std::stod(fields[2]) / 100.0; // DDMM.MMMM
+                gga.latitude = fields[2].empty() ? 0.0 : std::stod(fields[2]) / 100.0;
                 gga.lat_dir = fields[3].empty() ? ' ' : fields[3][0];
-                gga.longitude = fields[4].empty() ? 0.0 : std::stod(fields[4]) / 100.0; // DDDMM.MMMM
+                gga.longitude = fields[4].empty() ? 0.0 : std::stod(fields[4]) / 100.0;
                 gga.lon_dir = fields[5].empty() ? ' ' : fields[5][0];
                 gga.gps_qual = fields[6].empty() ? 0 : std::stoi(fields[6]);
                 gga.num_sats = fields[7].empty() ? 0 : std::stoi(fields[7]);
@@ -35,40 +35,8 @@ NMEAGGA parse_gga(const std::string& sentence) {
 }
 
 void read_gps1(const std::string& port, DWORD baud_rate) {
-    gps1_handle = CreateFileA(("\\\\.\\" + port).c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (gps1_handle == INVALID_HANDLE_VALUE) {
-        std::cerr << "Failed to open " << port << ": " << GetLastError() << std::endl;
-        return;
-    }
-
-    DCB dcbSerialParams = { 0 };
-    dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
-    if (!GetCommState(gps1_handle, &dcbSerialParams)) {
-        std::cerr << "Failed to get COMM state for " << port << std::endl;
-        CloseHandle(gps1_handle);
-        gps1_handle = INVALID_HANDLE_VALUE;
-        return;
-    }
-
-    dcbSerialParams.BaudRate = baud_rate;
-    dcbSerialParams.ByteSize = 8;
-    dcbSerialParams.StopBits = ONESTOPBIT;
-    dcbSerialParams.Parity = NOPARITY;
-    if (!SetCommState(gps1_handle, &dcbSerialParams)) {
-        std::cerr << "Failed to set COMM state for " << port << std::endl;
-        CloseHandle(gps1_handle);
-        gps1_handle = INVALID_HANDLE_VALUE;
-        return;
-    }
-
-    COMMTIMEOUTS timeouts = { 0 };
-    timeouts.ReadIntervalTimeout = 50;
-    timeouts.ReadTotalTimeoutConstant = 50;
-    timeouts.ReadTotalTimeoutMultiplier = 10;
-    if (!SetCommTimeouts(gps1_handle, &timeouts)) {
-        std::cerr << "Failed to set timeouts for " << port << std::endl;
-        CloseHandle(gps1_handle);
-        gps1_handle = INVALID_HANDLE_VALUE;
+        std::cerr << "GPS1 handle is invalid" << std::endl;
         return;
     }
 
@@ -95,13 +63,9 @@ void read_gps1(const std::string& port, DWORD baud_rate) {
                     }
                 }
             }
-        }
-        else {
+        } else {
             std::cerr << "Error reading from " << port << ": " << GetLastError() << std::endl;
             Sleep(1000);
         }
     }
-
-    CloseHandle(gps1_handle);
-    gps1_handle = INVALID_HANDLE_VALUE;
 }

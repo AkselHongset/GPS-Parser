@@ -74,47 +74,7 @@ Settings load_settings() {
         throw std::runtime_error("Invalid DisplayIntervalMs format in settings.ini: " + std::string(buffer));
     }
 
-    // Les NTRIP-innstillinger
-    if (!GetPrivateProfileStringA("NTRIP", "NTRIP_Host", "", buffer, sizeof(buffer), ".\\settings.ini")) {
-        throw std::runtime_error("Failed to read NTRIP_Host from settings.ini");
-    }
-    settings.ntrip_host = buffer;
-    if (settings.ntrip_host.empty()) {
-        throw std::runtime_error("NTRIP_Host is empty in settings.ini");
-    }
-
-    if (!GetPrivateProfileStringA("NTRIP", "NTRIP_Port", "", buffer, sizeof(buffer), ".\\settings.ini")) {
-        throw std::runtime_error("Failed to read NTRIP_Port from settings.ini");
-    }
-    try {
-        settings.ntrip_port = std::stoi(buffer);
-        if (settings.ntrip_port <= 0) {
-            throw std::runtime_error("NTRIP_Port must be positive: " + std::string(buffer));
-        }
-    }
-    catch (const std::exception&) {
-        throw std::runtime_error("Invalid NTRIP_Port format in settings.ini: " + std::string(buffer));
-    }
-
-    if (!GetPrivateProfileStringA("NTRIP", "NTRIP_MountPoint", "", buffer, sizeof(buffer), ".\\settings.ini")) {
-        throw std::runtime_error("Failed to read NTRIP_MountPoint from settings.ini");
-    }
-    settings.ntrip_mountpoint = buffer;
-    if (settings.ntrip_mountpoint.empty()) {
-        throw std::runtime_error("NTRIP_MountPoint is empty in settings.ini");
-    }
-
-    if (!GetPrivateProfileStringA("NTRIP", "NTRIP_Username", "", buffer, sizeof(buffer), ".\\settings.ini")) {
-        throw std::runtime_error("Failed to read NTRIP_Username from settings.ini");
-    }
-    settings.ntrip_username = buffer;
-
-    if (!GetPrivateProfileStringA("NTRIP", "NTRIP_Password", "", buffer, sizeof(buffer), ".\\settings.ini")) {
-        throw std::runtime_error("Failed to read NTRIP_Password from settings.ini");
-    }
-    settings.ntrip_password = buffer;
-
-    // Les UDP-innstillinger (med standardverdier hvis ikke spesifisert)
+    // Les UDP-innstillinger
     if (!GetPrivateProfileStringA("UDP", "IP", "192.168.1.100", buffer, sizeof(buffer), ".\\settings.ini")) {
         throw std::runtime_error("Failed to read UDP IP from settings.ini");
     }
@@ -151,26 +111,64 @@ int main() {
         validate_com_port(settings.gps2_port);
         std::cout << "COM port " << settings.gps2_port << " is available" << std::endl;
 
+        // Åpne GPS1-port
+        gps1_handle = CreateFileA(("\\\\.\\" + settings.gps1_port).c_str(),
+                                  GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (gps1_handle == INVALID_HANDLE_VALUE) {
+            throw std::runtime_error("Failed to open GPS1 port " + settings.gps1_port + ": Error " + std::to_string(GetLastError()));
+        }
+
+        DCB dcbSerialParams = { 0 };
+        dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
+        if (!GetCommState(gps1_handle, &dcbSerialParams)) {
+            CloseHandle(gps1_handle);
+            throw std::runtime_error("Failed to get COMM state for " + settings.gps1_port);
+        }
+        dcbSerialParams.BaudRate = settings.baud_rate;
+        dcbSerialParams.ByteSize = 8;
+        dcbSerialParams.StopBits = ONESTOPBIT;
+        dcbSerialParams.Parity = NOPARITY;
+        if (!SetCommState(gps1_handle, &dcbSerialParams)) {
+            CloseHandle(gps1_handle);
+            throw std::runtime_error("Failed to set COMM state for " + settings.gps1_port);
+        }
+
+        COMMTIMEOUTS timeouts = { 0 };
+        timeouts.ReadIntervalTimeout = 50;
+        timeouts.ReadTotalTimeoutConstant = 50;
+        timeouts.ReadTotalTimeoutMultiplier = 10;
+        if (!SetCommTimeouts(gps1_handle, &timeouts)) {
+            CloseHandle(gps1_handle);
+            throw std::runtime_error("Failed to set timeouts for " + settings.gps1_port);
+        }
+
         // Start tråder
         std::thread gps1_thread(read_gps1, settings.gps1_port, settings.baud_rate);
         std::thread gps2_thread(read_gps2, settings.gps2_port, settings.baud_rate);
         std::thread display_thread(display_data, settings.display_interval_ms);
         std::thread udp_thread(send_to_agopengps, settings);
-        std::thread rtcm_thread(fetch_rtcm_corrections, settings, gps1_handle);
+        std::thread rtcm_udp_thread(fetch_rtcm_udp, gps1_handle);
 
         gps1_thread.detach();
         gps2_thread.detach();
         display_thread.detach();
         udp_thread.detach();
-        rtcm_thread.detach();
+        rtcm_udp_thread.detach();
 
         std::cout << "Press Enter to exit..." << std::endl;
         std::cin.get();
+
+        // Lukk gps1_handle før avslutning
+        CloseHandle(gps1_handle);
     }
     catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         std::cerr << "Press Enter to exit..." << std::endl;
         std::cin.get();
+        if (gps1_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(gps1_handle);
+        }
         return 1;
     }
 

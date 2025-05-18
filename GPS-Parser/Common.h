@@ -1,8 +1,8 @@
 #ifndef COMMON_H
 #define COMMON_H
 
-#define WIN32_LEAN_AND_MEAN // Forhindrer at <windows.h> inkluderer <winsock.h>
-#include <winsock2.h>       // Inkluder Winsock 2 først
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
 #include <windows.h>
 #include <string>
 #include <mutex>
@@ -17,7 +17,7 @@ struct NMEAGGA {
     char lon_dir;
     int gps_qual;
     int num_sats;
-    double hdop; // Legg til HDOP-felt
+    double hdop;
     double altitude;
     bool valid;
     NMEAGGA();
@@ -42,11 +42,6 @@ struct Settings {
     std::string gps2_port;
     DWORD baud_rate;
     DWORD display_interval_ms;
-    std::string ntrip_host;
-    int ntrip_port;
-    std::string ntrip_mountpoint;
-    std::string ntrip_username;
-    std::string ntrip_password;
     std::string udp_ip;
     int udp_port;
 };
@@ -55,6 +50,5 @@ struct Settings {
 extern NMEAGGA latest_gga;
 extern UBXNAVRELPOSNED latest_relposned;
 extern std::mutex data_mutex;
-
 
 #endif // COMMON_H
