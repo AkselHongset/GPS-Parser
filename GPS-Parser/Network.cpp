@@ -1,8 +1,10 @@
+#define _USE_MATH_DEFINES // Required for M_PI in MSVC
 #include "Network.h"
 #include "Display.h"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
+#include <cmath>
 
 // Funksjon for å beregne NMEA-sjekksum
 std::string calculate_nmea_checksum(const std::string& sentence) {
@@ -38,7 +40,6 @@ void send_to_agopengps(const Settings& settings) {
         WSACleanup();
         return;
     }
-    // Set socket to non-blocking
     u_long mode = 1;
     ioctlsocket(udpSocket, FIONBIO, &mode);
 
@@ -47,12 +48,19 @@ void send_to_agopengps(const Settings& settings) {
         {
             std::lock_guard<std::mutex> lock(data_mutex);
             if (latest_gga.valid && latest_relposned.valid && latest_gga.gps_qual > 0) {
-                // Convert to DDMM.MMMM
+                // Convert to DDMM.MMMM for PAOGI
                 double lat = latest_gga.latitude;
                 double lat_ddmm = (int)lat * 100 + (lat - (int)lat) * 60;
                 double lon = latest_gga.longitude;
                 double lon_ddmm = (int)lon * 100 + (lon - (int)lon) * 60;
 
+                // Calculate roll
+                double roll = 0.0;
+                if (settings.antenna_separation > 0.0) {
+                    roll = atan2(latest_relposned.relPosD, settings.antenna_separation) * 180.0 / M_PI;
+                }
+
+                // Construct PAOGI message
                 std::stringstream ss;
                 ss << "$PAOGI,"
                     << latest_gga.timestamp << ","
@@ -63,9 +71,9 @@ void send_to_agopengps(const Settings& settings) {
                     << std::fixed << std::setprecision(1) << latest_gga.hdop << ","
                     << std::fixed << std::setprecision(1) << latest_gga.altitude << ","
                     << "0.0," // Age of differential
-                    << "0.0," // Speed
+                    << std::fixed << std::setprecision(1) << latest_gga.speed_knots << "," // Speed from VTG
                     << std::fixed << std::setprecision(1) << latest_relposned.relPosHeading << "," // Heading
-                    << "0.0," // Roll
+                    << std::fixed << std::setprecision(1) << roll << "," // Roll
                     << "0.0," // Pitch
                     << std::fixed << std::setprecision(1) << latest_relposned.relPosHeading << "," // Yaw
                     << std::fixed << std::setprecision(3) << latest_relposned.relPosLength << "," // Distance
@@ -75,12 +83,41 @@ void send_to_agopengps(const Settings& settings) {
             }
         }
 
+        // Send PAOGI message
         if (!paogi_message.empty()) {
             int len = static_cast<int>(paogi_message.length());
             int bytesSent = sendto(udpSocket, paogi_message.c_str(), len, 0,
                 (sockaddr*)&serverAddr, sizeof(serverAddr));
             if (bytesSent == SOCKET_ERROR) {
                 std::cerr << "Failed to send PAOGI: " << WSAGetLastError() << std::endl;
+            }
+        }
+
+        // Send raw GGA sentence
+        if (latest_gga.valid && !latest_gga.raw_sentence.empty()) {
+            std::string gga_message = latest_gga.raw_sentence;
+            if (gga_message.back() != '\n') {
+                gga_message += "\r\n";
+            }
+            int len = static_cast<int>(gga_message.length());
+            int bytesSent = sendto(udpSocket, gga_message.c_str(), len, 0,
+                (sockaddr*)&serverAddr, sizeof(serverAddr));
+            if (bytesSent == SOCKET_ERROR) {
+                std::cerr << "Failed to send GGA: " << WSAGetLastError() << std::endl;
+            }
+        }
+
+        // Send raw VTG sentence
+        if (latest_gga.valid && !latest_gga.raw_vtg_sentence.empty()) {
+            std::string vtg_message = latest_gga.raw_vtg_sentence;
+            if (vtg_message.back() != '\n') {
+                vtg_message += "\r\n";
+            }
+            int len = static_cast<int>(vtg_message.length());
+            int bytesSent = sendto(udpSocket, vtg_message.c_str(), len, 0,
+                (sockaddr*)&serverAddr, sizeof(serverAddr));
+            if (bytesSent == SOCKET_ERROR) {
+                std::cerr << "Failed to send VTG: " << WSAGetLastError() << std::endl;
             }
         }
 
@@ -91,7 +128,7 @@ void send_to_agopengps(const Settings& settings) {
     WSACleanup();
 }
 
-void fetch_rtcm_udp(HANDLE gps1_handle) {
+void fetch_rtcm_udp(HANDLE gps1_handle, int rtcm_port) {
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         std::cerr << "WSAStartup failed: " << WSAGetLastError() << std::endl;
@@ -107,7 +144,7 @@ void fetch_rtcm_udp(HANDLE gps1_handle) {
 
     sockaddr_in serverAddr;
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(2233);
+    serverAddr.sin_port = htons(rtcm_port);
     serverAddr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(udpSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
@@ -117,13 +154,12 @@ void fetch_rtcm_udp(HANDLE gps1_handle) {
         return;
     }
 
-    // Set socket to non-blocking
     u_long mode = 1;
     ioctlsocket(udpSocket, FIONBIO, &mode);
 
-    std::cout << "Listening for RTCM corrections on UDP port 2233..." << std::endl;
+    std::cout << "Listening for RTCM corrections on UDP port " << rtcm_port << "..." << std::endl;
 
-    char buffer[2048]; // Increased buffer size
+    char buffer[2048];
     sockaddr_in senderAddr;
     int senderAddrSize = sizeof(senderAddr);
     while (running) {
@@ -149,7 +185,7 @@ void fetch_rtcm_udp(HANDLE gps1_handle) {
                 std::cerr << "Error receiving UDP data: " << error << std::endl;
             }
         }
-        Sleep(10); // Prevent tight loop in non-blocking mode
+        Sleep(10);
     }
 
     closesocket(udpSocket);

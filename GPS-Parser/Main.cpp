@@ -5,6 +5,7 @@
 #include "Network.h"
 #include <iostream>
 #include <thread>
+#include <vector>
 #include <stdexcept>
 
 // Funksjon for å validere COM-port
@@ -21,7 +22,6 @@ Settings load_settings() {
     Settings settings;
     char buffer[256];
 
-    // Les GPS1_Port
     if (!GetPrivateProfileStringA("GPS", "GPS1_Port", "", buffer, sizeof(buffer), ".\\settings.ini")) {
         throw std::runtime_error("Failed to read GPS1_Port from settings.ini");
     }
@@ -30,7 +30,6 @@ Settings load_settings() {
         throw std::runtime_error("GPS1_Port is empty in settings.ini");
     }
 
-    // Les GPS2_Port
     if (!GetPrivateProfileStringA("GPS", "GPS2_Port", "", buffer, sizeof(buffer), ".\\settings.ini")) {
         throw std::runtime_error("Failed to read GPS2_Port from settings.ini");
     }
@@ -39,7 +38,6 @@ Settings load_settings() {
         throw std::runtime_error("GPS2_Port is empty in settings.ini");
     }
 
-    // Les BaudRate
     if (!GetPrivateProfileStringA("GPS", "BaudRate", "", buffer, sizeof(buffer), ".\\settings.ini")) {
         throw std::runtime_error("Failed to read BaudRate from settings.ini");
     }
@@ -52,14 +50,13 @@ Settings load_settings() {
         case 57600: settings.baud_rate = CBR_57600; break;
         case 115200: settings.baud_rate = CBR_115200; break;
         default:
-            throw std::runtime_error("Invalid BaudRate: " + std::string(buffer) + ". Must be 9600, 19200, 38400, 57600, or 115200");
+            throw std::runtime_error("Invalid BaudRate: " + std::string(buffer));
         }
     }
     catch (const std::exception&) {
         throw std::runtime_error("Invalid BaudRate format in settings.ini: " + std::string(buffer));
     }
 
-    // Les DisplayIntervalMs
     if (!GetPrivateProfileStringA("GPS", "DisplayIntervalMs", "", buffer, sizeof(buffer), ".\\settings.ini")) {
         throw std::runtime_error("Failed to read DisplayIntervalMs from settings.ini");
     }
@@ -74,7 +71,19 @@ Settings load_settings() {
         throw std::runtime_error("Invalid DisplayIntervalMs format in settings.ini: " + std::string(buffer));
     }
 
-    // Les UDP-innstillinger
+    if (!GetPrivateProfileStringA("GPS", "AntennaSeparation", "2.0", buffer, sizeof(buffer), ".\\settings.ini")) {
+        throw std::runtime_error("Failed to read AntennaSeparation from settings.ini");
+    }
+    try {
+        settings.antenna_separation = std::stod(buffer);
+        if (settings.antenna_separation <= 0) {
+            throw std::runtime_error("AntennaSeparation must be positive: " + std::string(buffer));
+        }
+    }
+    catch (const std::exception&) {
+        throw std::runtime_error("Invalid AntennaSeparation format in settings.ini: " + std::string(buffer));
+    }
+
     if (!GetPrivateProfileStringA("UDP", "IP", "192.168.1.100", buffer, sizeof(buffer), ".\\settings.ini")) {
         throw std::runtime_error("Failed to read UDP IP from settings.ini");
     }
@@ -96,22 +105,32 @@ Settings load_settings() {
         throw std::runtime_error("Invalid UDP Port format in settings.ini: " + std::string(buffer));
     }
 
+    if (!GetPrivateProfileStringA("UDP", "RTCM_UDPPort", "2233", buffer, sizeof(buffer), ".\\settings.ini")) {
+        throw std::runtime_error("Failed to read RTCM_UDPPort from settings.ini");
+    }
+    try {
+        settings.rtcm_udp_port = std::stoi(buffer);
+        if (settings.rtcm_udp_port <= 0) {
+            throw std::runtime_error("RTCM_UDPPort must be positive: " + std::string(buffer));
+        }
+    }
+    catch (const std::exception&) {
+        throw std::runtime_error("Invalid RTCM_UDPPort format in settings.ini: " + std::string(buffer));
+    }
+
     return settings;
 }
 
 int main() {
     try {
-        // Last innstillinger fra settings.ini
         Settings settings = load_settings();
 
-        // Valider COM-porter
         std::cout << "Validating COM ports..." << std::endl;
         validate_com_port(settings.gps1_port);
         std::cout << "COM port " << settings.gps1_port << " is available" << std::endl;
         validate_com_port(settings.gps2_port);
         std::cout << "COM port " << settings.gps2_port << " is available" << std::endl;
 
-        // Åpne GPS1-port
         gps1_handle = CreateFileA(("\\\\.\\" + settings.gps1_port).c_str(),
             GENERIC_READ | GENERIC_WRITE, 0, NULL,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -143,25 +162,26 @@ int main() {
             throw std::runtime_error("Failed to set timeouts for " + settings.gps1_port);
         }
 
-        // Start tråder
-        std::thread gps1_thread(read_gps1, settings.gps1_port, settings.baud_rate);
-        std::thread gps2_thread(read_gps2, settings.gps2_port, settings.baud_rate);
-        std::thread display_thread(display_data, settings.display_interval_ms);
-        std::thread udp_thread(send_to_agopengps, settings);
-        std::thread rtcm_udp_thread(fetch_rtcm_udp, gps1_handle);
-
-        gps1_thread.detach();
-        gps2_thread.detach();
-        display_thread.detach();
-        udp_thread.detach();
-        rtcm_udp_thread.detach();
+        std::vector<std::thread> threads;
+        threads.emplace_back(read_gps1, settings.gps1_port, settings.baud_rate);
+        threads.emplace_back(read_gps2, settings.gps2_port, settings.baud_rate);
+        threads.emplace_back(display_data, settings.display_interval_ms);
+        threads.emplace_back(send_to_agopengps, settings);
+        // Use lambda without capturing gps1_handle, as it's global
+        threads.emplace_back([rtcm_port = settings.rtcm_udp_port]() {
+            fetch_rtcm_udp(gps1_handle, rtcm_port);
+            });
 
         std::cout << "Press Enter to exit..." << std::endl;
         std::cin.get();
-        running = false; // Signal threads to exit
-        Sleep(1000); // Allow threads to clean up
+        running = false;
 
-        // Lukk håndtak
+        for (auto& t : threads) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
+
         if (gps1_handle != INVALID_HANDLE_VALUE) {
             CloseHandle(gps1_handle);
         }

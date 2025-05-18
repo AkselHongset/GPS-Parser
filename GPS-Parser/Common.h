@@ -11,6 +11,8 @@
 
 // Struktur for å lagre NMEA GGA-data
 struct NMEAGGA {
+    std::string raw_sentence;
+    std::string raw_vtg_sentence; // Added for VTG forwarding
     std::string timestamp;
     double latitude;
     char lat_dir;
@@ -20,6 +22,7 @@ struct NMEAGGA {
     int num_sats;
     double hdop;
     double altitude;
+    double speed_knots;
     bool valid;
     NMEAGGA();
 };
@@ -31,7 +34,7 @@ struct UBXNAVRELPOSNED {
     double relPosD; // m
     double relPosLength; // m
     double relPosHeading; // deg
-    uint8_t carrSoln; // Carrier solution status
+    uint8_t carrSoln;
     bool isMoving;
     bool valid;
     UBXNAVRELPOSNED();
@@ -45,6 +48,8 @@ struct Settings {
     DWORD display_interval_ms;
     std::string udp_ip;
     int udp_port;
+    int rtcm_udp_port;
+    double antenna_separation;
 };
 
 // Globale variabler
