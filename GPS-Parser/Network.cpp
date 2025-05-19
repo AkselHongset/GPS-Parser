@@ -13,7 +13,7 @@
 std::queue<std::vector<char>> rtcm_queue;
 std::mutex rtcm_queue_mutex;
 
-// Variabler for å spore datarater
+// Variabler for å spore datarater (kun for intern bruk, ikke logget)
 static std::chrono::system_clock::time_point last_log_time = std::chrono::system_clock::now();
 static size_t total_bytes_received = 0;
 static size_t total_bytes_written = 0;
@@ -145,6 +145,14 @@ void write_rtcm_to_gps1(HANDLE gps1_handle) {
         size_t batch_size = 0;
         {
             std::lock_guard<std::mutex> lock(rtcm_queue_mutex);
+            // Sikkerhetsfunksjon: Tøm køen hvis den når 100 pakker
+            if (rtcm_queue.size() >= 100) {
+                std::cerr << "WARNING: RTCM queue reached 100 packets, clearing queue to prevent overflow" << std::endl;
+                while (!rtcm_queue.empty()) {
+                    rtcm_queue.pop();
+                }
+                continue; // Hopp til neste iterasjon
+            }
             // Samle opptil 2048 bytes (eller flere pakker) for batch-skriving
             while (!rtcm_queue.empty() && batch_size < 2048) {
                 auto& data = rtcm_queue.front();
@@ -154,6 +162,10 @@ void write_rtcm_to_gps1(HANDLE gps1_handle) {
             }
         }
         if (!batch_data.empty() && gps1_handle != INVALID_HANDLE_VALUE) {
+            // Tøm utgangsbuffer før skriving
+            if (!PurgeComm(gps1_handle, PURGE_TXCLEAR)) {
+                std::cerr << "Failed to purge TX buffer: " << GetLastError() << std::endl;
+            }
             auto start_time = std::chrono::steady_clock::now();
             DWORD bytesWritten;
             if (WriteFile(gps1_handle, batch_data.data(), batch_data.size(), &bytesWritten, nullptr)) {
@@ -183,17 +195,6 @@ void write_rtcm_to_gps1(HANDLE gps1_handle) {
                 }
                 Sleep(10); // Kort pause for å gi porten tid til å gjenopprette
             }
-        }
-        // Logg datarater hvert 10. sekund
-        auto now = std::chrono::system_clock::now();
-        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_log_time).count();
-        if (elapsed_ms >= 10000) { // 10 sekunder
-            double seconds = elapsed_ms / 1000.0;
-            std::cout << "RTCM Stats: Received " << (total_bytes_received / seconds) << " bytes/s, Written "
-                << (total_bytes_written / seconds) << " bytes/s, Queue Size: " << rtcm_queue.size() << std::endl;
-            total_bytes_received = 0;
-            total_bytes_written = 0;
-            last_log_time = now;
         }
         // Kort pause hvis køen er tom
         if (batch_data.empty()) {
@@ -250,9 +251,7 @@ void fetch_rtcm_udp(HANDLE gps1_handle, int rtcm_port) {
         int bytesReceived = recvfrom(udpSocket, buffer, sizeof(buffer), 0,
             (sockaddr*)&senderAddr, &senderAddrSize);
         if (bytesReceived > 0) {
-            // Logg pakkestørrelse
-            std::cout << "Received RTCM packet: " << bytesReceived << " bytes" << std::endl;
-            // Legg data i køen
+            // Ingen logging av pakkestørrelse
             std::vector<char> data(buffer, buffer + bytesReceived);
             total_bytes_received += bytesReceived;
             {

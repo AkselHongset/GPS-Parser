@@ -159,8 +159,8 @@ int main() {
         timeouts.ReadIntervalTimeout = 50;
         timeouts.ReadTotalTimeoutConstant = 50;
         timeouts.ReadTotalTimeoutMultiplier = 10;
-        timeouts.WriteTotalTimeoutConstant = 10; // Redusert for raskere skriving
-        timeouts.WriteTotalTimeoutMultiplier = 2; // Redusert for å minimere ventetid
+        timeouts.WriteTotalTimeoutConstant = 0; // Deaktiver skrive-timeouts
+        timeouts.WriteTotalTimeoutMultiplier = 0; // Deaktiver for raskere skriving
         if (!SetCommTimeouts(gps1_handle, &timeouts)) {
             CloseHandle(gps1_handle);
             throw std::runtime_error("Failed to set timeouts for " + settings.gps1_port + ": Error " + std::to_string(GetLastError()));

@@ -1,5 +1,5 @@
 #include "Display.h"
-#include "Network.h" // For rtcm_queue og rtcm_queue_mutex
+#include "Network.h"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -72,18 +72,6 @@ void display_data(DWORD interval_ms) {
             std::cout << std::string(50, '-') << std::endl;
 
             std::cout << "RTCM Corrections:" << std::endl;
-            {
-                std::lock_guard<std::mutex> lock(rtcm_mutex);
-                if (last_rtcm_time.time_since_epoch().count() == 0) {
-                    std::cout << "  No RTCM data received" << std::endl;
-                }
-                else {
-                    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_rtcm_time).count();
-                    std::cout << "  Last received: " << elapsed << " seconds ago" << std::endl;
-                }
-            }
-
-            // Vis RTCM-køstørrelse
             {
                 std::lock_guard<std::mutex> lock(rtcm_queue_mutex);
                 std::cout << "  RTCM Queue Size: " << rtcm_queue.size() << " packets" << std::endl;
