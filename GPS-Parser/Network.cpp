@@ -1,10 +1,22 @@
-#define _USE_MATH_DEFINES // Required for M_PI in MSVC
+#define _USE_MATH_DEFINES // Må være før cmath
 #include "Network.h"
 #include "Display.h"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
 #include <cmath>
+#include <queue>
+#include <thread>
+#include <chrono>
+
+// Definer globale variabler for RTCM-kø
+std::queue<std::vector<char>> rtcm_queue;
+std::mutex rtcm_queue_mutex;
+
+// Variabler for å spore datarater
+static std::chrono::system_clock::time_point last_log_time = std::chrono::system_clock::now();
+static size_t total_bytes_received = 0;
+static size_t total_bytes_written = 0;
 
 // Funksjon for å beregne NMEA-sjekksum
 std::string calculate_nmea_checksum(const std::string& sentence) {
@@ -17,6 +29,7 @@ std::string calculate_nmea_checksum(const std::string& sentence) {
     return ss.str();
 }
 
+// Funksjon for å sende data til AgOpenGPS
 void send_to_agopengps(const Settings& settings) {
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -48,19 +61,16 @@ void send_to_agopengps(const Settings& settings) {
         {
             std::lock_guard<std::mutex> lock(data_mutex);
             if (latest_gga.valid && latest_relposned.valid && latest_gga.gps_qual > 0) {
-                // Convert to DDMM.MMMM for PAOGI
                 double lat = latest_gga.latitude;
                 double lat_ddmm = (int)lat * 100 + (lat - (int)lat) * 60;
                 double lon = latest_gga.longitude;
                 double lon_ddmm = (int)lon * 100 + (lon - (int)lon) * 60;
 
-                // Calculate roll
                 double roll = 0.0;
                 if (settings.antenna_separation > 0.0) {
                     roll = atan2(latest_relposned.relPosD, settings.antenna_separation) * 180.0 / M_PI;
                 }
 
-                // Construct PAOGI message
                 std::stringstream ss;
                 ss << "$PAOGI,"
                     << latest_gga.timestamp << ","
@@ -70,20 +80,19 @@ void send_to_agopengps(const Settings& settings) {
                     << latest_gga.num_sats << ","
                     << std::fixed << std::setprecision(1) << latest_gga.hdop << ","
                     << std::fixed << std::setprecision(1) << latest_gga.altitude << ","
-                    << "0.0," // Age of differential
-                    << std::fixed << std::setprecision(1) << latest_gga.speed_knots << "," // Speed from VTG
-                    << std::fixed << std::setprecision(1) << latest_relposned.relPosHeading << "," // Heading
-                    << std::fixed << std::setprecision(1) << roll << "," // Roll
-                    << "0.0," // Pitch
-                    << std::fixed << std::setprecision(1) << latest_relposned.relPosHeading << "," // Yaw
-                    << std::fixed << std::setprecision(3) << latest_relposned.relPosLength << "," // Distance
-                    << "T"; // Tilt
+                    << "0.0,"
+                    << std::fixed << std::setprecision(1) << latest_gga.speed_knots << ","
+                    << std::fixed << std::setprecision(1) << latest_relposned.relPosHeading << ","
+                    << std::fixed << std::setprecision(1) << roll << ","
+                    << "0.0,"
+                    << std::fixed << std::setprecision(1) << latest_relposned.relPosHeading << ","
+                    << std::fixed << std::setprecision(3) << latest_relposned.relPosLength << ","
+                    << "T";
                 paogi_message = ss.str();
                 paogi_message += "*" + calculate_nmea_checksum(paogi_message.substr(1)) + "\r\n";
             }
         }
 
-        // Send PAOGI message
         if (!paogi_message.empty()) {
             int len = static_cast<int>(paogi_message.length());
             int bytesSent = sendto(udpSocket, paogi_message.c_str(), len, 0,
@@ -93,7 +102,6 @@ void send_to_agopengps(const Settings& settings) {
             }
         }
 
-        // Send raw GGA sentence
         if (latest_gga.valid && !latest_gga.raw_sentence.empty()) {
             std::string gga_message = latest_gga.raw_sentence;
             if (gga_message.back() != '\n') {
@@ -107,7 +115,6 @@ void send_to_agopengps(const Settings& settings) {
             }
         }
 
-        // Send raw VTG sentence
         if (latest_gga.valid && !latest_gga.raw_vtg_sentence.empty()) {
             std::string vtg_message = latest_gga.raw_vtg_sentence;
             if (vtg_message.back() != '\n') {
@@ -121,13 +128,81 @@ void send_to_agopengps(const Settings& settings) {
             }
         }
 
-        Sleep(100); // 10 Hz update rate
+        Sleep(100);
     }
 
     closesocket(udpSocket);
     WSACleanup();
 }
 
+// Funksjon for å skrive RTCM-data fra køen til GPS1
+void write_rtcm_to_gps1(HANDLE gps1_handle) {
+    // Øk trådprioritet for å prioritere skriving
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+
+    while (running) {
+        std::vector<char> batch_data;
+        size_t batch_size = 0;
+        {
+            std::lock_guard<std::mutex> lock(rtcm_queue_mutex);
+            // Samle opptil 2048 bytes (eller flere pakker) for batch-skriving
+            while (!rtcm_queue.empty() && batch_size < 2048) {
+                auto& data = rtcm_queue.front();
+                batch_data.insert(batch_data.end(), data.begin(), data.end());
+                batch_size += data.size();
+                rtcm_queue.pop();
+            }
+        }
+        if (!batch_data.empty() && gps1_handle != INVALID_HANDLE_VALUE) {
+            auto start_time = std::chrono::steady_clock::now();
+            DWORD bytesWritten;
+            if (WriteFile(gps1_handle, batch_data.data(), batch_data.size(), &bytesWritten, nullptr)) {
+                update_rtcm_timestamp();
+                total_bytes_written += bytesWritten;
+                auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start_time).count();
+                if (bytesWritten != batch_data.size()) {
+                    std::cerr << "Incomplete RTCM write to GPS1: " << bytesWritten << " of " << batch_data.size()
+                        << " bytes, took " << duration_ms << " ms" << std::endl;
+                }
+                else if (duration_ms > 10) {
+                    std::cerr << "Slow RTCM write to GPS1: " << bytesWritten << " bytes, took " << duration_ms << " ms" << std::endl;
+                }
+            }
+            else {
+                DWORD error = GetLastError();
+                std::cerr << "Failed to write RTCM to GPS1: Error " << error << ", took "
+                    << std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - start_time).count() << " ms" << std::endl;
+                // Prøv å tømme feil og fortsett
+                DWORD errors;
+                COMSTAT comStat;
+                if (ClearCommError(gps1_handle, &errors, &comStat)) {
+                    std::cout << "Cleared COM port error: Errors = " << errors << ", Buffer = "
+                        << comStat.cbInQue << " in, " << comStat.cbOutQue << " out" << std::endl;
+                }
+                Sleep(10); // Kort pause for å gi porten tid til å gjenopprette
+            }
+        }
+        // Logg datarater hvert 10. sekund
+        auto now = std::chrono::system_clock::now();
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_log_time).count();
+        if (elapsed_ms >= 10000) { // 10 sekunder
+            double seconds = elapsed_ms / 1000.0;
+            std::cout << "RTCM Stats: Received " << (total_bytes_received / seconds) << " bytes/s, Written "
+                << (total_bytes_written / seconds) << " bytes/s, Queue Size: " << rtcm_queue.size() << std::endl;
+            total_bytes_received = 0;
+            total_bytes_written = 0;
+            last_log_time = now;
+        }
+        // Kort pause hvis køen er tom
+        if (batch_data.empty()) {
+            Sleep(5);
+        }
+    }
+}
+
+// Funksjon for å hente RTCM-korreksjoner fra UDP-port
 void fetch_rtcm_udp(HANDLE gps1_handle, int rtcm_port) {
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -140,6 +215,12 @@ void fetch_rtcm_udp(HANDLE gps1_handle, int rtcm_port) {
         std::cerr << "Failed to create UDP socket: " << WSAGetLastError() << std::endl;
         WSACleanup();
         return;
+    }
+
+    // Øk mottaksbufferstørrelsen
+    int bufferSize = 65536; // 64 KB
+    if (setsockopt(udpSocket, SOL_SOCKET, SO_RCVBUF, (char*)&bufferSize, sizeof(bufferSize)) == SOCKET_ERROR) {
+        std::cerr << "Failed to set receive buffer size: " << WSAGetLastError() << std::endl;
     }
 
     sockaddr_in serverAddr;
@@ -159,6 +240,9 @@ void fetch_rtcm_udp(HANDLE gps1_handle, int rtcm_port) {
 
     std::cout << "Listening for RTCM corrections on UDP port " << rtcm_port << "..." << std::endl;
 
+    // Start en separat tråd for å skrive RTCM-data til GPS1
+    std::thread writer_thread(write_rtcm_to_gps1, gps1_handle);
+
     char buffer[2048];
     sockaddr_in senderAddr;
     int senderAddrSize = sizeof(senderAddr);
@@ -166,17 +250,19 @@ void fetch_rtcm_udp(HANDLE gps1_handle, int rtcm_port) {
         int bytesReceived = recvfrom(udpSocket, buffer, sizeof(buffer), 0,
             (sockaddr*)&senderAddr, &senderAddrSize);
         if (bytesReceived > 0) {
-            if (gps1_handle != INVALID_HANDLE_VALUE) {
-                DWORD bytesWritten;
-                if (WriteFile(gps1_handle, buffer, bytesReceived, &bytesWritten, nullptr)) {
-                    update_rtcm_timestamp();
+            // Logg pakkestørrelse
+            std::cout << "Received RTCM packet: " << bytesReceived << " bytes" << std::endl;
+            // Legg data i køen
+            std::vector<char> data(buffer, buffer + bytesReceived);
+            total_bytes_received += bytesReceived;
+            {
+                std::lock_guard<std::mutex> lock(rtcm_queue_mutex);
+                rtcm_queue.push(std::move(data));
+                // Begrens køstørrelse for å unngå overdreven minnebruk
+                if (rtcm_queue.size() > 1000) {
+                    std::cerr << "RTCM queue overflow, dropping oldest packet" << std::endl;
+                    rtcm_queue.pop();
                 }
-                else {
-                    std::cerr << "Failed to write RTCM to GPS1: " << GetLastError() << std::endl;
-                }
-            }
-            else {
-                std::cerr << "Invalid GPS1 handle for RTCM data" << std::endl;
             }
         }
         else if (bytesReceived == SOCKET_ERROR) {
@@ -185,9 +271,10 @@ void fetch_rtcm_udp(HANDLE gps1_handle, int rtcm_port) {
                 std::cerr << "Error receiving UDP data: " << error << std::endl;
             }
         }
-        Sleep(10);
+        // Ingen Sleep her for å maksimere mottakshastighet
     }
 
     closesocket(udpSocket);
     WSACleanup();
+    writer_thread.join();
 }

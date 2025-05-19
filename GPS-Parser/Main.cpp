@@ -49,6 +49,8 @@ Settings load_settings() {
         case 38400: settings.baud_rate = CBR_38400; break;
         case 57600: settings.baud_rate = CBR_57600; break;
         case 115200: settings.baud_rate = CBR_115200; break;
+        case 230400: settings.baud_rate = 230400; break;
+        case 460800: settings.baud_rate = 460800; break;
         default:
             throw std::runtime_error("Invalid BaudRate: " + std::string(buffer));
         }
@@ -142,7 +144,7 @@ int main() {
         dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
         if (!GetCommState(gps1_handle, &dcbSerialParams)) {
             CloseHandle(gps1_handle);
-            throw std::runtime_error("Failed to get COMM state for " + settings.gps1_port);
+            throw std::runtime_error("Failed to get COMM state for " + settings.gps1_port + ": Error " + std::to_string(GetLastError()));
         }
         dcbSerialParams.BaudRate = settings.baud_rate;
         dcbSerialParams.ByteSize = 8;
@@ -150,16 +152,40 @@ int main() {
         dcbSerialParams.Parity = NOPARITY;
         if (!SetCommState(gps1_handle, &dcbSerialParams)) {
             CloseHandle(gps1_handle);
-            throw std::runtime_error("Failed to set COMM state for " + settings.gps1_port);
+            throw std::runtime_error("Failed to set COMM state for " + settings.gps1_port + ": Error " + std::to_string(GetLastError()));
         }
 
         COMMTIMEOUTS timeouts = { 0 };
         timeouts.ReadIntervalTimeout = 50;
         timeouts.ReadTotalTimeoutConstant = 50;
         timeouts.ReadTotalTimeoutMultiplier = 10;
+        timeouts.WriteTotalTimeoutConstant = 10; // Redusert for raskere skriving
+        timeouts.WriteTotalTimeoutMultiplier = 2; // Redusert for å minimere ventetid
         if (!SetCommTimeouts(gps1_handle, &timeouts)) {
             CloseHandle(gps1_handle);
-            throw std::runtime_error("Failed to set timeouts for " + settings.gps1_port);
+            throw std::runtime_error("Failed to set timeouts for " + settings.gps1_port + ": Error " + std::to_string(GetLastError()));
+        }
+
+        // Øk seriellportbuffer
+        if (!SetupComm(gps1_handle, 131072, 131072)) { // 128 KB inn/ut-buffer
+            CloseHandle(gps1_handle);
+            throw std::runtime_error("Failed to set up COMM buffers for " + settings.gps1_port + ": Error " + std::to_string(GetLastError()));
+        }
+
+        // Tøm seriellportbuffer ved oppstart
+        if (!PurgeComm(gps1_handle, PURGE_TXCLEAR | PURGE_RXCLEAR)) {
+            std::cerr << "Failed to purge COM port buffers: " << GetLastError() << std::endl;
+        }
+
+        // Logg seriellportstatus
+        COMSTAT comStat;
+        DWORD errors;
+        if (ClearCommError(gps1_handle, &errors, &comStat)) {
+            std::cout << "GPS1 COM port status: Buffer size = " << comStat.cbInQue << " bytes in, "
+                << comStat.cbOutQue << " bytes out, Errors = " << errors << std::endl;
+        }
+        else {
+            std::cerr << "Failed to get COM port status: " << GetLastError() << std::endl;
         }
 
         std::vector<std::thread> threads;
@@ -167,10 +193,7 @@ int main() {
         threads.emplace_back(read_gps2, settings.gps2_port, settings.baud_rate);
         threads.emplace_back(display_data, settings.display_interval_ms);
         threads.emplace_back(send_to_agopengps, settings);
-        // Use lambda without capturing gps1_handle, as it's global
-        threads.emplace_back([rtcm_port = settings.rtcm_udp_port]() {
-            fetch_rtcm_udp(gps1_handle, rtcm_port);
-            });
+        threads.emplace_back(fetch_rtcm_udp, gps1_handle, settings.rtcm_udp_port);
 
         std::cout << "Press Enter to exit..." << std::endl;
         std::cin.get();

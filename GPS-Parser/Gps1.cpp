@@ -82,6 +82,7 @@ void read_gps1(const std::string& port, DWORD baud_rate) {
     std::string buffer;
     char data[256];
     DWORD bytesRead;
+    std::vector<std::string> lines; // Buffer for flere linjer
     while (running) {
         if (ReadFile(gps1_handle, data, sizeof(data) - 1, &bytesRead, NULL)) {
             if (bytesRead > 0) {
@@ -91,21 +92,28 @@ void read_gps1(const std::string& port, DWORD baud_rate) {
                 while ((pos = buffer.find('\n')) != std::string::npos) {
                     std::string line = buffer.substr(0, pos);
                     buffer.erase(0, pos + 1);
+                    lines.push_back(line); // Samle linjer
+                }
+                // Oppdater latest_gga kun når flere linjer er samlet
+                if (lines.size() >= 5) { // Prosesser hver 5. linje for å redusere låsing
                     std::lock_guard<std::mutex> lock(data_mutex);
-                    if (line.find("$GPGGA") == 0 || line.find("$GNGGA") == 0) {
-                        NMEAGGA gga = parse_gga(line);
-                        if (gga.valid) {
-                            gga.speed_knots = latest_gga.speed_knots; // Preserve existing speed
-                            gga.raw_vtg_sentence = latest_gga.raw_vtg_sentence; // Preserve existing VTG sentence
-                            latest_gga = gga;
+                    for (const auto& line : lines) {
+                        if (line.find("$GPGGA") == 0 || line.find("$GNGGA") == 0) {
+                            NMEAGGA gga = parse_gga(line);
+                            if (gga.valid) {
+                                gga.speed_knots = latest_gga.speed_knots;
+                                gga.raw_vtg_sentence = latest_gga.raw_vtg_sentence;
+                                latest_gga = gga;
+                            }
+                        }
+                        else if (line.find("$GPVTG") == 0 || line.find("$GNVTG") == 0) {
+                            std::string raw_vtg_sentence;
+                            double speed_knots = parse_vtg(line, raw_vtg_sentence);
+                            latest_gga.speed_knots = speed_knots;
+                            latest_gga.raw_vtg_sentence = raw_vtg_sentence;
                         }
                     }
-                    else if (line.find("$GPVTG") == 0 || line.find("$GNVTG") == 0) {
-                        std::string raw_vtg_sentence;
-                        double speed_knots = parse_vtg(line, raw_vtg_sentence);
-                        latest_gga.speed_knots = speed_knots;
-                        latest_gga.raw_vtg_sentence = raw_vtg_sentence;
-                    }
+                    lines.clear();
                 }
             }
         }
