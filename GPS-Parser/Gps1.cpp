@@ -7,7 +7,6 @@ HANDLE gps1_handle = INVALID_HANDLE_VALUE;
 
 NMEAGGA parse_gga(const std::string& sentence) {
     NMEAGGA gga;
-    gga.raw_sentence = sentence;
     if (!sentence.empty() && (sentence.find("$GPGGA") == 0 || sentence.find("$GNGGA") == 0)) {
         std::vector<std::string> fields;
         std::stringstream ss(sentence);
@@ -51,31 +50,6 @@ NMEAGGA parse_gga(const std::string& sentence) {
     return gga;
 }
 
-// Parse VTG message to extract speed in knots and store raw sentence
-double parse_vtg(const std::string& sentence, std::string& raw_vtg_sentence) {
-    double speed_knots = 0.0;
-    raw_vtg_sentence = sentence; // Store raw VTG sentence
-    if (!sentence.empty() && (sentence.find("$GPVTG") == 0 || sentence.find("$GNVTG") == 0)) {
-        std::vector<std::string> fields;
-        std::stringstream ss(sentence);
-        std::string field;
-        while (std::getline(ss, field, ',')) {
-            fields.push_back(field);
-        }
-        if (fields.size() >= 8) { // Field 7 is speed in knots
-            try {
-                if (!fields[7].empty()) {
-                    speed_knots = std::stod(fields[7]);
-                }
-            }
-            catch (...) {
-                speed_knots = 0.0;
-            }
-        }
-    }
-    return speed_knots;
-}
-
 void read_gps1(const std::string& port, DWORD baud_rate) {
     std::cout << "Connected to " << port << std::endl;
 
@@ -101,16 +75,9 @@ void read_gps1(const std::string& port, DWORD baud_rate) {
                         if (line.find("$GPGGA") == 0 || line.find("$GNGGA") == 0) {
                             NMEAGGA gga = parse_gga(line);
                             if (gga.valid) {
-                                gga.speed_knots = latest_gga.speed_knots;
-                                gga.raw_vtg_sentence = latest_gga.raw_vtg_sentence;
                                 latest_gga = gga;
+                                data_cv.notify_all();
                             }
-                        }
-                        else if (line.find("$GPVTG") == 0 || line.find("$GNVTG") == 0) {
-                            std::string raw_vtg_sentence;
-                            double speed_knots = parse_vtg(line, raw_vtg_sentence);
-                            latest_gga.speed_knots = speed_knots;
-                            latest_gga.raw_vtg_sentence = raw_vtg_sentence;
                         }
                     }
                     lines.clear();

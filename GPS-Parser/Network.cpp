@@ -56,41 +56,42 @@ void send_to_agopengps(const Settings& settings) {
     u_long mode = 1;
     ioctlsocket(udpSocket, FIONBIO, &mode);
 
+    std::mutex cv_mutex;
     while (running) {
         std::string paogi_message;
         {
-            std::lock_guard<std::mutex> lock(data_mutex);
-            if (latest_gga.valid && latest_relposned.valid && latest_gga.gps_qual > 0) {
-                double lat = latest_gga.latitude;
-                double lat_ddmm = (int)lat * 100 + (lat - (int)lat) * 60;
-                double lon = latest_gga.longitude;
-                double lon_ddmm = (int)lon * 100 + (lon - (int)lon) * 60;
+            std::unique_lock<std::mutex> lock(data_mutex);
+            data_cv.wait(lock, [] { return (latest_gga.valid && latest_relposned.valid && latest_gga.gps_qual > 0) || !running; });
+            if (!running) break;
 
-                double roll = 0.0;
-                if (settings.antenna_separation > 0.0) {
-                    roll = atan2(latest_relposned.relPosD, settings.antenna_separation) * 180.0 / M_PI;
-                }
+            double lat = latest_gga.latitude;
+            double lat_ddmm = (int)lat * 100 + (lat - (int)lat) * 60;
+            double lon = latest_gga.longitude;
+            double lon_ddmm = (int)lon * 100 + (lon - (int)lon) * 60;
 
-                std::stringstream ss;
-                ss << "$PAOGI,"
-                    << latest_gga.timestamp << ","
-                    << std::fixed << std::setprecision(4) << lat_ddmm << "," << latest_gga.lat_dir << ","
-                    << std::fixed << std::setprecision(4) << lon_ddmm << "," << latest_gga.lon_dir << ","
-                    << latest_gga.gps_qual << ","
-                    << latest_gga.num_sats << ","
-                    << std::fixed << std::setprecision(1) << latest_gga.hdop << ","
-                    << std::fixed << std::setprecision(1) << latest_gga.altitude << ","
-                    << "0.0,"
-                    << std::fixed << std::setprecision(1) << latest_gga.speed_knots << ","
-                    << std::fixed << std::setprecision(1) << latest_relposned.relPosHeading << ","
-                    << std::fixed << std::setprecision(1) << roll << ","
-                    << "0.0,"
-                    << std::fixed << std::setprecision(1) << latest_relposned.relPosHeading << ","
-                    << std::fixed << std::setprecision(3) << latest_relposned.relPosLength << ","
-                    << "T";
-                paogi_message = ss.str();
-                paogi_message += "*" + calculate_nmea_checksum(paogi_message.substr(1)) + "\r\n";
+            double roll = 0.0;
+            if (settings.antenna_separation > 0.0) {
+                roll = atan2(latest_relposned.relPosD, settings.antenna_separation) * 180.0 / M_PI;
             }
+
+            std::stringstream ss;
+            ss << "$PAOGI,"
+                << latest_gga.timestamp << ","
+                << std::fixed << std::setprecision(4) << lat_ddmm << "," << latest_gga.lat_dir << ","
+                << std::fixed << std::setprecision(4) << lon_ddmm << "," << latest_gga.lon_dir << ","
+                << latest_gga.gps_qual << ","
+                << latest_gga.num_sats << ","
+                << std::fixed << std::setprecision(1) << latest_gga.hdop << ","
+                << std::fixed << std::setprecision(1) << latest_gga.altitude << ","
+                << std::fixed << std::setprecision(1) << latest_relposned.speed_knots << ","
+                << std::fixed << std::setprecision(1) << latest_relposned.relPosHeading << ","
+                << std::fixed << std::setprecision(1) << roll << ","
+                << "0.0,"
+                << std::fixed << std::setprecision(1) << latest_relposned.relPosHeading << ","
+                << std::fixed << std::setprecision(3) << latest_relposned.relPosLength << ","
+                << "T";
+            paogi_message = ss.str();
+            paogi_message += "*" + calculate_nmea_checksum(paogi_message.substr(1)) + "\r\n";
         }
 
         if (!paogi_message.empty()) {
@@ -101,34 +102,6 @@ void send_to_agopengps(const Settings& settings) {
                 std::cerr << "Failed to send PAOGI: " << WSAGetLastError() << std::endl;
             }
         }
-
-        if (latest_gga.valid && !latest_gga.raw_sentence.empty()) {
-            std::string gga_message = latest_gga.raw_sentence;
-            if (gga_message.back() != '\n') {
-                gga_message += "\r\n";
-            }
-            int len = static_cast<int>(gga_message.length());
-            int bytesSent = sendto(udpSocket, gga_message.c_str(), len, 0,
-                (sockaddr*)&serverAddr, sizeof(serverAddr));
-            if (bytesSent == SOCKET_ERROR) {
-                std::cerr << "Failed to send GGA: " << WSAGetLastError() << std::endl;
-            }
-        }
-
-        if (latest_gga.valid && !latest_gga.raw_vtg_sentence.empty()) {
-            std::string vtg_message = latest_gga.raw_vtg_sentence;
-            if (vtg_message.back() != '\n') {
-                vtg_message += "\r\n";
-            }
-            int len = static_cast<int>(vtg_message.length());
-            int bytesSent = sendto(udpSocket, vtg_message.c_str(), len, 0,
-                (sockaddr*)&serverAddr, sizeof(serverAddr));
-            if (bytesSent == SOCKET_ERROR) {
-                std::cerr << "Failed to send VTG: " << WSAGetLastError() << std::endl;
-            }
-        }
-
-        Sleep(100);
     }
 
     closesocket(udpSocket);

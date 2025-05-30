@@ -8,11 +8,10 @@
 #include <mutex>
 #include <vector>
 #include <atomic>
+#include <condition_variable>
 
 // Struktur for å lagre NMEA GGA-data
 struct NMEAGGA {
-    std::string raw_sentence;
-    std::string raw_vtg_sentence; // Added for VTG forwarding
     std::string timestamp;
     double latitude;
     char lat_dir;
@@ -22,7 +21,6 @@ struct NMEAGGA {
     int num_sats;
     double hdop;
     double altitude;
-    double speed_knots;
     bool valid;
     NMEAGGA();
 };
@@ -34,6 +32,7 @@ struct UBXNAVRELPOSNED {
     double relPosD; // m
     double relPosLength; // m
     double relPosHeading; // deg
+    double speed_knots; // knots, fra UBX-NAV-VELNED
     uint8_t carrSoln;
     bool isMoving;
     bool valid;
@@ -56,6 +55,7 @@ struct Settings {
 extern NMEAGGA latest_gga;
 extern UBXNAVRELPOSNED latest_relposned;
 extern std::mutex data_mutex;
+extern std::condition_variable data_cv;
 extern std::atomic<bool> running;
 
 #endif // COMMON_H

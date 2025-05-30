@@ -1,5 +1,6 @@
 #include "Gps2.h"
 #include <iostream>
+#include <cmath>
 
 // Global HANDLE for GPS2
 HANDLE gps2_handle = INVALID_HANDLE_VALUE;
@@ -34,6 +35,23 @@ UBXNAVRELPOSNED parse_ubx_nav_relposned(const std::vector<uint8_t>& payload) {
         }
     }
     return relpos;
+}
+
+void parse_ubx_nav_velned(const std::vector<uint8_t>& payload, UBXNAVRELPOSNED& relpos) {
+    if (payload.size() >= 36) { // UBX-NAV-VELNED payload er 36 bytes
+        try {
+            // Ekstrakt hastighetsfelt (lille-endian)
+            int32_t velN = *reinterpret_cast<const int32_t*>(&payload[12]); // cm/s
+            int32_t velE = *reinterpret_cast<const int32_t*>(&payload[16]); // cm/s
+            // Beregn horisontal hastighet i m/s
+            double speed_ms = std::sqrt(velN * velN + velE * velE) / 100.0; // m/s
+            // Konverter til knuter (1 m/s = 1.94384 knots)
+            relpos.speed_knots = speed_ms * 1.94384;
+        }
+        catch (...) {
+            relpos.speed_knots = 0.0;
+        }
+    }
 }
 
 void read_gps2(const std::string& port, DWORD baud_rate) {
@@ -89,12 +107,20 @@ void read_gps2(const std::string& port, DWORD baud_rate) {
                 if (buffer.size() >= 8) { // Minimum UBX header + lengde
                     uint16_t payload_length = (buffer[5] << 8) | buffer[4];
                     if (buffer.size() >= payload_length + 8) { // Full melding
-                        if (buffer[2] == 0x01 && buffer[3] == 0x3C) { // NAV-RELPOSNED
-                            std::vector<uint8_t> payload(buffer.begin() + 6, buffer.begin() + 6 + payload_length);
-                            UBXNAVRELPOSNED relpos = parse_ubx_nav_relposned(payload);
-                            if (relpos.valid) {
-                                std::lock_guard<std::mutex> lock(data_mutex);
-                                latest_relposned = relpos;
+                        std::vector<uint8_t> payload(buffer.begin() + 6, buffer.begin() + 6 + payload_length);
+                        {
+                            std::lock_guard<std::mutex> lock(data_mutex);
+                            if (buffer[2] == 0x01 && buffer[3] == 0x3C) { // NAV-RELPOSNED
+                                UBXNAVRELPOSNED relpos = parse_ubx_nav_relposned(payload);
+                                if (relpos.valid) {
+                                    relpos.speed_knots = latest_relposned.speed_knots; // Bevar tidligere hastighet
+                                    latest_relposned = relpos;
+                                    data_cv.notify_all();
+                                }
+                            }
+                            else if (buffer[2] == 0x01 && buffer[3] == 0x12) { // NAV-VELNED
+                                parse_ubx_nav_velned(payload, latest_relposned);
+                                data_cv.notify_all();
                             }
                         }
                         buffer.erase(buffer.begin(), buffer.begin() + payload_length + 8);
